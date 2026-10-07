@@ -18,6 +18,8 @@ permissions:
   contents: read
 jobs:
   windows-smoke:
+    permissions:
+      contents: write
     runs-on: windows-2025
     timeout-minutes: 10
     steps:
@@ -41,8 +43,8 @@ jobs:
           $releaseId = 405702916
           $releaseJson = gh api "repos/$env:GITHUB_REPOSITORY/releases/$releaseId"
           if ($LASTEXITCODE -ne 0) {
-            @{releaseId=$releaseId; access='not-readable-with-contents-read'; operation='GET release by exact numeric ID'; permissionsChanged=$false} | ConvertTo-Json | Set-Content smoke-results/release-lookup.json
-            throw 'Exact draft release is not readable with contents:read; no permissions were changed.'
+            @{releaseId=$releaseId; access='not-readable-with-job-token'; operation='GET release by exact numeric ID'; permissionMutationsInJob=$false} | ConvertTo-Json | Set-Content smoke-results/release-lookup.json
+            throw 'Exact draft release is not readable with this job token; this job changes no permissions.'
           }
           $release = $releaseJson | ConvertFrom-Json
           @{id=$release.id; tag=$release.tag_name; draft=$release.draft; name=$release.name; assets=@($release.assets | Select-Object id,name,size,digest,state)} | ConvertTo-Json -Depth 5 | Set-Content smoke-results/release-lookup.json
@@ -51,6 +53,7 @@ jobs:
           if ($matches.Count -ne 1) { throw 'Expected exactly one uploaded, hash-matching candidate asset.' }
           $zip = Join-Path candidate $name
           $assetId = $matches[0].id
+          if ($assetId -ne 618549601) { throw 'Candidate asset identity mismatch' }
           gh api "repos/$env:GITHUB_REPOSITORY/releases/assets/$assetId" --header 'Accept: application/octet-stream' > $zip
           if ($LASTEXITCODE -ne 0) { throw 'Candidate asset download failed' }
           if ((Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant() -ne $env:EXPECTED_SHA) { throw 'Candidate checksum mismatch' }
@@ -73,3 +76,4 @@ jobs:
             smoke-results/*.log
           retention-days: 7
           if-no-files-found: error
+
