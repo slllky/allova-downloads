@@ -2,6 +2,14 @@ name: Verify Windows portable release
 on:
   workflow_dispatch:
     inputs:
+      test_mode:
+        description: Candidate verification or read-only public-runtime API preflight
+        required: true
+        type: choice
+        default: candidate
+        options:
+          - candidate
+          - api-preflight
       release_tag:
         description: Draft release tag to test
         required: true
@@ -25,6 +33,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Verify and extract candidate
+        if: inputs.test_mode != 'api-preflight'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -60,6 +69,21 @@ jobs:
           if (@($exe).Count -ne 1) { throw 'Expected one Allova.exe' }
           "ALLOVA_EXE=$exe" >> $env:GITHUB_ENV
           "ALLOVA_VERSION=$env:GAME_VERSION" >> $env:GITHUB_ENV
+      - name: Verify public Electron runtime for API preflight
+        if: inputs.test_mode == 'api-preflight'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force smoke-results, candidate | Out-Null
+          $runtime = 'https://github.com/electron/electron/releases/download/v44.6.0/electron-v44.6.0-win32-x64.zip'
+          Invoke-WebRequest -Uri $runtime -OutFile candidate/electron.zip
+          $digest = (Get-FileHash candidate/electron.zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($digest -ne '04d6071f8deca081044e1398f96f65e4c1550ffdb3f882504cd78528d821d422') { throw 'Official Electron runtime checksum mismatch' }
+          Expand-Archive candidate/electron.zip -DestinationPath candidate/runtime
+          $exe = (Resolve-Path candidate/runtime/electron.exe).Path
+          "ALLOVA_EXE=$exe" >> $env:GITHUB_ENV
+          'ALLOVA_PREFLIGHT=1' >> $env:GITHUB_ENV
+          @{mode='api-preflight'; electron='44.6.0'; officialRuntimeSha256=$digest; draftAccess=$false; permission='contents:read'} | ConvertTo-Json | Set-Content smoke-results/preflight-runtime.json
       - name: Launch actual Windows executable and verify gameplay shell
         shell: pwsh
         run: node ci/windows-smoke.mjs
@@ -74,3 +98,4 @@ jobs:
             smoke-results/*.log
           retention-days: 7
           if-no-files-found: error
+
