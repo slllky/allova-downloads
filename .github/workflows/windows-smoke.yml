@@ -37,9 +37,22 @@ jobs:
           if ($env:GAME_VERSION -notmatch '^[0-9]+\.[0-9]+\.[0-9]+$') { throw 'Invalid version' }
           if ($env:EXPECTED_SHA -notmatch '^[a-f0-9]{64}$') { throw 'Invalid digest' }
           $name = "Allova-$env:GAME_VERSION-Windows-x64.zip"
-          gh release download $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --pattern $name --dir candidate
-          if ($LASTEXITCODE -ne 0) { throw 'Candidate download failed' }
+          New-Item -ItemType Directory -Force smoke-results, candidate | Out-Null
+          $releaseId = 405702916
+          $releaseJson = gh api "repos/$env:GITHUB_REPOSITORY/releases/$releaseId"
+          if ($LASTEXITCODE -ne 0) {
+            @{releaseId=$releaseId; access='not-readable-with-contents-read'; operation='GET release by exact numeric ID'; permissionsChanged=$false} | ConvertTo-Json | Set-Content smoke-results/release-lookup.json
+            throw 'Exact draft release is not readable with contents:read; no permissions were changed.'
+          }
+          $release = $releaseJson | ConvertFrom-Json
+          @{id=$release.id; tag=$release.tag_name; draft=$release.draft; name=$release.name; assets=@($release.assets | Select-Object id,name,size,digest,state)} | ConvertTo-Json -Depth 5 | Set-Content smoke-results/release-lookup.json
+          if ($release.id -ne $releaseId -or $release.tag_name -ne $env:RELEASE_TAG) { throw 'Draft release identity mismatch' }
+          $matches = @($release.assets | Where-Object { $_.name -eq $name -and $_.state -eq 'uploaded' -and $_.digest -eq "sha256:$env:EXPECTED_SHA" })
+          if ($matches.Count -ne 1) { throw 'Expected exactly one uploaded, hash-matching candidate asset.' }
           $zip = Join-Path candidate $name
+          $assetId = $matches[0].id
+          gh api "repos/$env:GITHUB_REPOSITORY/releases/assets/$assetId" --header 'Accept: application/octet-stream' > $zip
+          if ($LASTEXITCODE -ne 0) { throw 'Candidate asset download failed' }
           if ((Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant() -ne $env:EXPECTED_SHA) { throw 'Candidate checksum mismatch' }
           Expand-Archive $zip -DestinationPath candidate/unpacked
           $exe = (Get-ChildItem candidate/unpacked -Recurse -File -Filter Allova.exe).FullName
