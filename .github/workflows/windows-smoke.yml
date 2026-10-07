@@ -18,6 +18,9 @@ permissions:
   contents: read
 jobs:
   windows-smoke:
+    # One explicitly approved draft-read diagnostic run; restore read-only immediately afterward.
+    permissions:
+      contents: write
     runs-on: windows-2025
     timeout-minutes: 10
     steps:
