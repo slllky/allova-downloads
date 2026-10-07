@@ -1,0 +1,62 @@
+name: Verify Windows portable release
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Draft release tag to test
+        required: true
+        type: string
+      version:
+        description: Expected game version
+        required: true
+        type: string
+      sha256:
+        description: Expected Windows ZIP SHA-256
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  windows-smoke:
+    runs-on: windows-2025
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6, verified 2026-10-07
+        with:
+          persist-credentials: false
+      - name: Verify and extract candidate
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          GAME_VERSION: ${{ inputs.version }}
+          EXPECTED_SHA: ${{ inputs.sha256 }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RELEASE_TAG -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+-windows(?:-[a-z0-9]+)?$') { throw 'Invalid release tag' }
+          if ($env:GAME_VERSION -notmatch '^[0-9]+\.[0-9]+\.[0-9]+$') { throw 'Invalid version' }
+          if ($env:EXPECTED_SHA -notmatch '^[a-f0-9]{64}$') { throw 'Invalid digest' }
+          $name = "Allova-$env:GAME_VERSION-Windows-x64.zip"
+          gh release download $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --pattern $name --dir candidate
+          if ($LASTEXITCODE -ne 0) { throw 'Candidate download failed' }
+          $zip = Join-Path candidate $name
+          if ((Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant() -ne $env:EXPECTED_SHA) { throw 'Candidate checksum mismatch' }
+          Expand-Archive $zip -DestinationPath candidate/unpacked
+          $exe = (Get-ChildItem candidate/unpacked -Recurse -File -Filter Allova.exe).FullName
+          if (@($exe).Count -ne 1) { throw 'Expected one Allova.exe' }
+          "ALLOVA_EXE=$exe" >> $env:GITHUB_ENV
+          "ALLOVA_VERSION=$env:GAME_VERSION" >> $env:GITHUB_ENV
+      - name: Launch actual Windows executable and verify gameplay shell
+        shell: pwsh
+        run: node ci/windows-smoke.mjs
+      - name: Preserve bounded test evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7, verified 2026-10-07
+        with:
+          name: windows-smoke-${{ inputs.version }}
+          path: |
+            smoke-results/*.json
+            smoke-results/*.png
+            smoke-results/*.log
+          retention-days: 7
+          if-no-files-found: error
