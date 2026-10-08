@@ -26,9 +26,6 @@ permissions:
   contents: read
 jobs:
   windows-smoke:
-    # Temporary permission for one explicitly approved draft-read verification run.
-    permissions:
-      contents: write
     runs-on: windows-2025
     timeout-minutes: 10
     steps:
