@@ -26,6 +26,9 @@ permissions:
   contents: read
 jobs:
   windows-smoke:
+    # Temporary permission for one explicitly approved draft-read verification run.
+    permissions:
+      contents: write
     runs-on: windows-2025
     timeout-minutes: 10
     steps:
@@ -47,7 +50,7 @@ jobs:
           if ($env:EXPECTED_SHA -notmatch '^[a-f0-9]{64}$') { throw 'Invalid digest' }
           $name = "Allova-$env:GAME_VERSION-Windows-x64.zip"
           New-Item -ItemType Directory -Force smoke-results, candidate | Out-Null
-          $releaseId = 405702916
+          $releaseId = 406141873
           $releaseJson = gh api "repos/$env:GITHUB_REPOSITORY/releases/$releaseId"
           if ($LASTEXITCODE -ne 0) {
             @{releaseId=$releaseId; access='not-readable-with-job-token'; operation='GET release by exact numeric ID'; permissionMutationsInJob=$false} | ConvertTo-Json | Set-Content smoke-results/release-lookup.json
@@ -60,7 +63,7 @@ jobs:
           if ($matches.Count -ne 1) { throw 'Expected exactly one uploaded, hash-matching candidate asset.' }
           $zip = Join-Path candidate $name
           $assetId = $matches[0].id
-          if ($assetId -ne 618549601) { throw 'Candidate asset identity mismatch' }
+          if ($assetId -ne 620637623) { throw 'Candidate asset identity mismatch' }
           gh api "repos/$env:GITHUB_REPOSITORY/releases/assets/$assetId" --header 'Accept: application/octet-stream' > $zip
           if ($LASTEXITCODE -ne 0) { throw 'Candidate asset download failed' }
           if ((Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant() -ne $env:EXPECTED_SHA) { throw 'Candidate checksum mismatch' }
