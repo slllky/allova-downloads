@@ -69,6 +69,15 @@ export async function probeDevToolsDisabled(w,listContents){
 
 export function stableSave(save){const copy=structuredClone(save);delete copy.savedAt;delete copy.playtime;delete copy.gameTime;return copy}
 
+// Exact expected Continue/refresh additions for the fixed fictional fixture in
+// pinned game 1.2.14. This is an expected state, not a comparison-field filter.
+export function expectedContinuedFixture(fixture){
+ const copy=structuredClone(fixture);copy.flags.harvestGymLayoutVersion=1;
+ copy.mapRevisions={...copy.mapRevisions,route2:'route2-circus-open-03'};
+ for(const key of ['unlocked','unseen']){assert(!copy.recordCollection[key].includes('sunset'));copy.recordCollection[key].push('sunset')}
+ return copy;
+}
+
 async function run(){
  assert.equal(process.platform,'win32','This workflow must test the actual Windows executable');
  const exe=resolve(process.env.ALLOVA_EXE||'');assert(exe.endsWith('Allova.exe'));
@@ -128,18 +137,29 @@ async function run(){
    const updateUI=await desktop.evaluate(`({status:document.querySelector('[data-release-status]')?.textContent,check:[...document.querySelectorAll('[data-release-check]')].map(e=>({hidden:e.hidden,disabled:e.disabled})),apply:[...document.querySelectorAll('[data-release-apply]')].map(e=>({hidden:e.hidden,disabled:e.disabled}))})`);
    assert(updateUI.status?.includes('Installed build v'+expected));assert(updateUI.check.length>0&&updateUI.check.every(x=>x.hidden&&x.disabled));assert(updateUI.apply.length>0&&updateUI.apply.every(x=>x.hidden));report.desktopUpdates.options=updateUI;
    await click(desktop,'options-tab-save');
+   // Continue migrates the loaded state and discovers the current town's music
+   // without immediately persisting it. Save through the real UI before taking
+   // the full-field export baseline; do not compare live export with stale seed bytes.
+   const beforeManualSave=await desktop.evaluate(`JSON.parse(localStorage.getItem(${JSON.stringify(SAVE_KEY)}))?.savedAt`);
+   await click(desktop,'option-save');
+   await until(()=>desktop.evaluate(`JSON.parse(localStorage.getItem(${JSON.stringify(SAVE_KEY)}))?.savedAt!==${JSON.stringify(beforeManualSave)}`),'manual device save persisted',10);
    const preExport=await desktop.evaluate(`JSON.parse(localStorage.getItem(${JSON.stringify(SAVE_KEY)}))`);assert.equal(preExport.name,'Desktop QA');assert.equal(preExport.version,1);assert.deepEqual(preExport.party,fixture.party);
+   assert.deepEqual(stableSave(preExport),stableSave(expectedContinuedFixture(fixture)),'Manual save must preserve the complete fixture plus only the pinned Continue migrations and town music discovery');
+   report.exportBaseline={source:'real Save game control after Continue',savedAt:preExport.savedAt,stableSha256:createHash('sha256').update(JSON.stringify(stableSave(preExport))).digest('hex')};
    report.exportObserver=await main.evaluate(`(${installExportObserver.toString()})(globalThis.__allovaQA,${JSON.stringify(backup)},${JSON.stringify(report.security.defaultExportPath)})`);assert.equal(report.exportObserver.listenerCountAfter,2);
    await desktop.evaluate(`document.getElementById('export').addEventListener('click',e=>{window.__exportClickEvidence={trusted:e.isTrusted,activation:navigator.userActivation.isActive}},{once:true})`);
    await click(desktop,'export');
    await until(async()=>{const e=await main.evaluate('globalThis.__allovaQA.exportEvidence');report.exportEvidence=e;if(e.rejected)throw Error(e.rejected);return !!e.done},'accepted DownloadItem completion',25);
    const clickEvidence=await desktop.evaluate('window.__exportClickEvidence');report.exportClick=clickEvidence;assert.equal(clickEvidence.trusted,true);assert.equal(clickEvidence.activation,true);assert.equal(report.exportEvidence.defaultPrevented,false);assert.equal(report.exportEvidence.done,'completed');assert.equal(report.exportEvidence.savedPath,backup);
    const size=(await stat(backup)).size;assert(size>0&&size<=400000);const exported=JSON.parse(await readFile(backup,'utf8'));assert.deepEqual(stableSave(exported),stableSave(preExport));
+   report.exportBaseline.exportedStableSha256=createHash('sha256').update(JSON.stringify(stableSave(exported))).digest('hex');
    // Deliberately change one fictional name so a no-op import cannot pass.
    const importCopy=structuredClone(exported);importCopy.name='Desktop Import';const importPath=join(downloads,'import-copy.json');await writeFile(importPath,JSON.stringify(importCopy));
    const doc=await desktop.rpc('DOM.getDocument');const input=await desktop.rpc('DOM.querySelector',{nodeId:doc.root.nodeId,selector:'#import-save'});assert(input.nodeId);await desktop.rpc('DOM.setFileInputFiles',{nodeId:input.nodeId,files:[importPath]});
    await until(()=>desktop.evaluate('document.getElementById("choice-0")?.innerText==="Import save"'),'explicit import review');assert((await desktop.evaluate('document.getElementById("dialogue").innerText')).includes('Desktop Import'));await screenshot(desktop,'import-review');await click(desktop,'choice-0');
+   await until(()=>desktop.evaluate(`JSON.parse(localStorage.getItem(${JSON.stringify(SAVE_KEY)}))?.name==='Desktop Import'`),'explicitly confirmed import persisted',10);
    const imported=await desktop.evaluate(`JSON.parse(localStorage.getItem(${JSON.stringify(SAVE_KEY)}))`);assert.deepEqual(stableSave(imported),stableSave(importCopy));assert.equal(imported.name,'Desktop Import');await screenshot(desktop,'imported-adventure');
+   report.importEvidence={confirmedName:imported.name,expectedStableSha256:createHash('sha256').update(JSON.stringify(stableSave(importCopy))).digest('hex'),importedStableSha256:createHash('sha256').update(JSON.stringify(stableSave(imported))).digest('hex')};
   });
   // Reference is an additional test-only sandboxed window with an ephemeral session.
   // It uses the real production web delivery, not the candidate's custom protocol.
