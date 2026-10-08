@@ -6,8 +6,11 @@ import {createHash} from 'node:crypto';
 import assert from 'node:assert/strict';
 
 const ORIGIN='https://armageddonallova.win';
-const MAIN_SHA='deff5d4565cce7ceda5c6e2e96ae05d0a71ac6fb1d291a9ec9787719feb746cb';
-const CLIENT_SHA='0f002d159e22ac34572a69427cf5ed5bc9f1186485dc02c208a0229933c8e80e';
+const MAIN_SHA='1e6dcd9bfc85494fc63b894901e08248a08a713d1b3db57e051cfbf22b07e52c';
+const CLIENT_SHA='c0430d68ade1f7bbbb7a1d0b316b4b6e0dba8bd8452b632532992a1ec5a50f46';
+// Web 1.2.15 is the reviewed storage-only cutover: exactly one version literal
+// differs from packaged 1.2.14. Keep both exact digests; never normalize code.
+const APPROVED_WEB_CLIENT_SHAS=new Set([CLIENT_SHA,'b5bdba1e3e378aaf4453d61d170966c94a355c38cb8ec9b087e041d11c2caad2']);
 const SAVE_KEY='allova.first-journey.v1';
 const wait=ms=>new Promise(r=>setTimeout(r,ms));
 async function until(fn,label,seconds=60){const end=Date.now()+seconds*1000;while(Date.now()<end){if(await fn())return;await wait(250)}throw Error('Timed out: '+label)}
@@ -98,13 +101,20 @@ async function run(){
  try{
   stop=await connect(true,9229);await title(desktop);await screenshot(desktop,'offline-title');
   const core=await desktop.evaluate(`(async()=>({origin:location.origin,requireType:typeof require,processType:typeof process,installed:await(await fetch('/api/version')).json(),asset:await(async()=>{const r=await fetch('/assets/mon1.png');return{status:r.status,mime:r.headers.get('content-type'),bytes:(await r.arrayBuffer()).byteLength}})(),online:await(async()=>{const r=await fetch('/api/phone-config');return{status:r.status,body:await r.json()}})()}))()`);
-  assert.equal(core.origin,ORIGIN);assert.equal(core.requireType,'undefined');assert.equal(core.processType,'undefined');assert.equal(core.installed.version,expected);assert.equal(core.asset.status,200);assert(core.asset.bytes>0);assert.equal(core.online.status,503);
+  assert.equal(core.origin,ORIGIN);assert.equal(core.requireType,'undefined');assert.equal(core.processType,'undefined');assert.equal(core.installed.version,expected);assert.equal(core.installed.distribution,'windows-portable');assert.equal(core.asset.status,200);assert(core.asset.bytes>0);assert.equal(core.online.status,503);
   report.checks.push('Actual Windows executable loads full offline title/artwork with isolated renderer and safe network failure');
   await click(desktop,'press-start');await click(desktop,'new-game');assert(await desktop.evaluate('!!document.getElementById("trainer-name")&&!!document.getElementById("begin")'));await screenshot(desktop,'new-game-form');await click(desktop,'back-title');
   await desktop.evaluate(`localStorage.setItem(${JSON.stringify(SAVE_KEY)},${JSON.stringify(JSON.stringify(fixture))})`);await stop();stop=null;
   stop=await connect(false,9230,9231);await title(desktop);
   report.security=await main.evaluate(`(()=>{const E=require('electron');const all=E.BrowserWindow.getAllWindows();if(all.length!==1)throw Error('Expected one candidate window');const w=all[0];if(w.webContents.getURL()!==${JSON.stringify(ORIGIN+'/')})throw Error('Wrong candidate origin');globalThis.__allovaQA={desktopWindow:w};const p=w.webContents.getLastWebPreferences();return {count:all.length,electron:process.versions.electron,chromium:process.versions.chrome,userData:E.app.getPath('userData'),nodeIntegration:p.nodeIntegration,contextIsolation:p.contextIsolation,sandbox:p.sandbox,webSecurity:p.webSecurity,preload:p.preload??null,preloadFieldPresent:Object.hasOwn(p,'preload'),devTools:p.devTools??null,constructorProof:{mainSha256:${JSON.stringify(MAIN_SHA)},configuredPreload:'none',configuredDevTools:false},contentSize:w.getContentSize(),originalDownloadListeners:w.webContents.session.listenerCount('will-download'),defaultExportPath:require('node:path').join(E.app.getPath('downloads'),'allova-save.json')}})()`);
   assert.equal(report.security.electron,'44.6.0');assert.equal(report.security.nodeIntegration,false);assert.equal(report.security.contextIsolation,true);assert.equal(report.security.sandbox,true);assert.equal(report.security.webSecurity,true);if(report.security.preloadFieldPresent)assert.equal(report.security.preload,'');assert.equal(report.security.originalDownloadListeners,1);
+  await check('Desktop truthfully labels the installed build and offers only manual PC updates',async()=>{
+   await until(()=>desktop.evaluate(`document.getElementById('release-indicator')?.textContent==='PC'`),'installed desktop build indicator',10);
+   report.desktopUpdates=await desktop.evaluate(`(()=>{const e=document.getElementById('release-indicator');return {label:e.textContent,title:e.title,disabled:e.disabled}})()`);
+   assert.equal(report.desktopUpdates.label,'PC');assert.equal(report.desktopUpdates.disabled,true);assert(report.desktopUpdates.title.includes('Installed build v'+expected));assert(!report.desktopUpdates.title.includes('Up to date'));
+   report.desktopUpdates.helpItems=await main.evaluate(`require('electron').Menu.getApplicationMenu().items.find(item=>item.label==='Help').submenu.items.map(item=>item.label)`);
+   assert(report.desktopUpdates.helpItems.includes('Download PC updates'));
+  });
   await check('Audited devTools:false prevents the supported DevTools opening API',async()=>{
    report.devToolsProbe=await main.evaluate(`(()=>{const E=require('electron');return (${probeDevToolsDisabled.toString()})(globalThis.__allovaQA.desktopWindow,()=>E.webContents.getAllWebContents().map(w=>({id:w.id,type:w.getType()})))})()`);
    assert.equal(report.devToolsProbe.passed,true,'DevTools unexpectedly opened or created new WebContents');
@@ -114,7 +124,10 @@ async function run(){
   await click(desktop,'continue');await screenshot(desktop,'continued-game');
   await check('Original download policy accepts user export; full JSON import round-trip preserves adventure',async()=>{
    const downloads=join(out,'downloads');await mkdir(downloads,{recursive:true});const backup=join(downloads,'allova-save.json');await assert.rejects(stat(backup),{code:'ENOENT'});
-   await click(desktop,'quick-options');await click(desktop,'options-tab-save');
+   await click(desktop,'quick-options');await click(desktop,'options-tab-help');
+   const updateUI=await desktop.evaluate(`({status:document.querySelector('[data-release-status]')?.textContent,check:[...document.querySelectorAll('[data-release-check]')].map(e=>({hidden:e.hidden,disabled:e.disabled})),apply:[...document.querySelectorAll('[data-release-apply]')].map(e=>({hidden:e.hidden,disabled:e.disabled}))})`);
+   assert(updateUI.status?.includes('Installed build v'+expected));assert(updateUI.check.length>0&&updateUI.check.every(x=>x.hidden&&x.disabled));assert(updateUI.apply.length>0&&updateUI.apply.every(x=>x.hidden));report.desktopUpdates.options=updateUI;
+   await click(desktop,'options-tab-save');
    const preExport=await desktop.evaluate(`JSON.parse(localStorage.getItem(${JSON.stringify(SAVE_KEY)}))`);assert.equal(preExport.name,'Desktop QA');assert.equal(preExport.version,1);assert.deepEqual(preExport.party,fixture.party);
    report.exportObserver=await main.evaluate(`(${installExportObserver.toString()})(globalThis.__allovaQA,${JSON.stringify(backup)},${JSON.stringify(report.security.defaultExportPath)})`);assert.equal(report.exportObserver.listenerCountAfter,2);
    await desktop.evaluate(`document.getElementById('export').addEventListener('click',e=>{window.__exportClickEvidence={trusted:e.isTrusted,activation:navigator.userActivation.isActive}},{once:true})`);
@@ -133,7 +146,7 @@ async function run(){
   const referenceReady=await check('Create isolated live-web reference at matched native content size',async()=>{
    report.reference=await main.evaluate(`(async()=>{const E=require('electron'),q=globalThis.__allovaQA;const s=E.session.fromPartition('allova-reference-'+Date.now());s.setPermissionRequestHandler((_w,_p,cb)=>cb(false));s.setPermissionCheckHandler(()=>false);s.setDevicePermissionHandler(()=>false);s.webRequest.onBeforeRequest((d,cb)=>{let allowed=false;try{const u=new URL(d.url);allowed=['GET','HEAD'].includes(d.method)&&((u.protocol==='https:'&&u.origin===${JSON.stringify(ORIGIN)}&&(!u.pathname.startsWith('/api/')||['/api/version','/api/phone-config'].includes(u.pathname)))||(u.protocol==='blob:'&&u.origin===${JSON.stringify(ORIGIN)})||(u.protocol==='data:'&&['image','font','media'].includes(d.resourceType)))}catch{}cb({cancel:!allowed})});const size=q.desktopWindow.getContentSize();const w=new E.BrowserWindow({width:size[0],height:size[1],useContentSize:true,show:false,webPreferences:{session:s,nodeIntegration:false,contextIsolation:true,sandbox:true,webSecurity:true,devTools:false,webviewTag:false}});q.referenceWindow=w;w.webContents.setWindowOpenHandler(()=>({action:'deny'}));w.webContents.on('will-navigate',e=>{if(e.url!==${JSON.stringify(ORIGIN+'/')})e.preventDefault()});w.webContents.on('will-attach-webview',e=>e.preventDefault());w.setMenu(null);w.webContents.setZoomFactor(q.desktopWindow.webContents.getZoomFactor());await w.loadURL(${JSON.stringify(ORIGIN+'/')});return {id:w.id,contentSize:w.getContentSize(),ephemeral:true,network:'GET/HEAD static plus version/phone-config only'}})()`,{timeout:120000});
    const targets=await(await fetch('http://127.0.0.1:9230/json/list')).json();const existing=desktop.ws.url;const target=targets.find(t=>t.type==='page'&&t.url===ORIGIN+'/'&&t.webSocketDebuggerUrl!==existing);assert(target);reference=await CDP.connect(target.webSocketDebuggerUrl);await reference.rpc('Runtime.enable');await reference.rpc('Page.enable');
-   const source=await reference.evaluate(`(async()=>{const r=await fetch('/game.js',{cache:'no-store'});const bytes=await r.arrayBuffer();return [...new Uint8Array(await crypto.subtle.digest('SHA-256',bytes))].map(x=>x.toString(16).padStart(2,'0')).join('')})()`);assert.equal(source,CLIENT_SHA,'Live web version must be exactly the packaged game');report.reference.gameJsSha256=source;
+   const source=await reference.evaluate(`(async()=>{const r=await fetch('/game.js',{cache:'no-store'});const bytes=await r.arrayBuffer();return [...new Uint8Array(await crypto.subtle.digest('SHA-256',bytes))].map(x=>x.toString(16).padStart(2,'0')).join('')})()`);assert(APPROVED_WEB_CLIENT_SHAS.has(source),'Live web reference must match an individually verified gameplay-equivalent digest');report.reference.gameJsSha256=source;report.reference.packagedGameJsSha256=CLIENT_SHA;report.reference.allowedVersionDifference=source===CLIENT_SHA?'none':'Web 1.2.15 storage cutover: one verified version literal differs from PC 1.2.14; gameplay and media unchanged';
   });
   if(referenceReady)await check('Matched live-web/Windows visual, animation, audio and control evidence',async()=>{
    await runParity({desktop,reference,fixture,report,out,main,wait,until,click,key,screenshot});
